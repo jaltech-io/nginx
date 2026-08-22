@@ -1,0 +1,37 @@
+---
+# =============================================================================
+# reload.yml — Recharge la config nginx sans redemarrer le conteneur
+# Usage :
+#   ansible-playbook reload.yml -i inventory.ini
+# =============================================================================
+
+- name: Reload nginx (sans downtime)
+  hosts: localhost
+  connection: local
+  become: yes
+
+  tasks:
+    - name: Test la configuration nginx
+      command: docker exec nginx nginx -t
+      register: nginx_test
+      changed_when: false
+      failed_when: nginx_test.rc != 0
+
+    - name: Recharge nginx (signal gracieux)
+      command: docker exec nginx nginx -s reload
+
+    - name: Attendre que nginx soit operationnel
+      command: docker inspect --format="{{ '{{' }}.State.Status{{ '}}' }}" nginx
+      register: nginx_status
+      until: nginx_status.stdout == "running"
+      retries: 10
+      delay: 3
+      changed_when: false
+
+    - name: Afficher l'etat
+      command: docker ps --format "table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}\t{{ '{{' }}.Ports{{ '}}' }}"
+      register: docker_ps
+      changed_when: false
+
+    - debug:
+        msg: "{{ docker_ps.stdout_lines }}"

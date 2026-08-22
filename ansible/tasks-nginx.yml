@@ -1,0 +1,289 @@
+---
+# =============================================================================
+# Role : nginx — Reverse proxy platform-net
+#
+# Etapes :
+#   1. Creer les repertoires /opt/nginx/
+#   2. Sync configs depuis S3 (nginx.conf, conf.d/, docker-compose.yml)
+#   3. Migration : arreter kc-nginx si present
+#   4. Creer le reseau Docker platform-net
+#   5. Obtenir le certificat SSL Let's Encrypt (si absent)
+#   6. Demarrer le conteneur nginx
+#   7. Configurer le cron de renouvellement SSL
+# =============================================================================
+
+- name: Creer les repertoires nginx
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /opt/nginx
+    - /opt/nginx/conf.d
+    - /opt/nginx/docker
+    - /var/www/certbot
+
+# ── Sync configs depuis S3 ─────────────────────────────────────────────────
+
+- name: Sync configs nginx depuis S3 (nginx.conf + conf.d/)
+  command: >
+    aws s3 sync s3://{{ backups_bucket }}/nginx/ /opt/nginx/
+      --region {{ aws_region }}
+      --exclude "docker/*"
+      --delete
+  register: s3_sync
+  changed_when: "'download' in s3_sync.stdout"
+
+- name: Sync docker-compose nginx depuis S3
+  command: >
+    aws s3 sync s3://{{ backups_bucket }}/nginx/docker/ /opt/nginx/docker/
+      --region {{ aws_region }}
+  register: s3_docker_sync
+  changed_when: "'download' in s3_docker_sync.stdout"
+
+- name: Remplacer AUTH_DOMAIN dans keycloak.conf
+  replace:
+    path: /opt/nginx/conf.d/keycloak.conf
+    regexp: 'AUTH_DOMAIN'
+    replace: "{{ domain_name }}"
+
+# ── Migration kc-nginx → nginx ─────────────────────────────────────────────
+
+- name: Arreter kc-nginx si present (migration depuis keycloak)
+  command: docker stop kc-nginx
+  failed_when: false
+  changed_when: false
+
+- name: Supprimer kc-nginx si present (migration depuis keycloak)
+  command: docker rm kc-nginx
+  failed_when: false
+  changed_when: false
+
+# ── Certificat SSL Let's Encrypt ───────────────────────────────────────────
+
+- name: Installer certbot via snap
+  command: snap install --classic certbot
+  args:
+    creates: /snap/bin/certbot
+
+- name: Creer le lien symbolique certbot
+  file:
+    src: /snap/bin/certbot
+    dest: /usr/bin/certbot
+    state: link
+    force: yes
+
+- name: Verifier si le certificat existe deja
+  stat:
+    path: "/etc/letsencrypt/live/{{ domain_name }}/fullchain.pem"
+  register: cert_exists
+
+- name: Arreter nginx si tourne (liberer le port 80 pour certbot standalone)
+  command: docker stop nginx
+  failed_when: false
+  changed_when: false
+  when: not cert_exists.stat.exists
+
+- name: Recuperer l'IP publique de la VM
+  uri:
+    url: https://checkip.amazonaws.com
+    return_content: yes
+  register: my_ip
+  when: not cert_exists.stat.exists
+
+- name: Attendre la propagation DNS (max 10 x 30s)
+  command: dig +short "{{ domain_name }}" @8.8.8.8
+  register: dns_resolved
+  until: dns_resolved.stdout.strip() == my_ip.content.strip()
+  retries: 10
+  delay: 30
+  changed_when: false
+  ignore_errors: yes
+  when: not cert_exists.stat.exists
+
+- name: Obtenir le certificat SSL (certbot standalone)
+  command: >
+    certbot certonly
+      --standalone
+      --non-interactive
+      --agree-tos
+      --email "admin@{{ domain_name }}"
+      -d "{{ domain_name }}"
+  when: not cert_exists.stat.exists
+
+# ── Certificat SSL pour le domaine admin (vhost admin.conf : front + BFF) ───
+# admin.conf reference /etc/letsencrypt/live/{{ admin_domain }}/ ; sans ce cert
+# nginx refuse de charger le bloc 443 -> admin.* retombe sur le serveur par
+# defaut (keycloak.conf). Cert separe (lineage propre, renouvele par le cron).
+
+- name: Verifier si le certificat admin existe deja
+  stat:
+    path: "/etc/letsencrypt/live/{{ admin_domain }}/fullchain.pem"
+  register: admin_cert_exists
+  when: admin_domain | default('') | length > 0
+
+- name: Arreter nginx pour certbot admin (liberer le port 80)
+  command: docker stop nginx
+  failed_when: false
+  changed_when: false
+  when:
+    - admin_domain | default('') | length > 0
+    - not admin_cert_exists.stat.exists
+
+- name: Obtenir le certificat SSL admin (certbot standalone)
+  command: >
+    certbot certonly
+      --standalone
+      --non-interactive
+      --agree-tos
+      --email "admin@{{ domain_name }}"
+      -d "{{ admin_domain }}"
+  when:
+    - admin_domain | default('') | length > 0
+    - not admin_cert_exists.stat.exists
+
+# ── Certificat SSL pour la landing (vhost profeskills.conf : apex + www) ────
+# profeskills.conf reference /etc/letsencrypt/live/{{ landing_domain }}/ ; cert
+# SAN (apex + www) obtenu AVANT le demarrage de nginx. Bloc additif et inerte
+# si landing_domain n'est pas defini -> n'impacte pas les deploiements existants.
+# Prerequis : les enregistrements DNS profeskills.com ET www.profeskills.com
+# doivent pointer vers la VM avant ce job (sinon certbot echoue).
+
+- name: Verifier si le certificat landing existe deja
+  stat:
+    path: "/etc/letsencrypt/live/{{ landing_domain }}/fullchain.pem"
+  register: landing_cert_exists
+  when: landing_domain | default('') | length > 0
+
+- name: Recuperer l'IP publique de la VM (wait DNS landing)
+  uri:
+    url: https://checkip.amazonaws.com
+    return_content: yes
+  register: landing_vm_ip
+  when:
+    - landing_domain | default('') | length > 0
+    - not landing_cert_exists.stat.exists
+
+# Attend que l'apex (cree par Terraform/Route53 dans deploy:infra) resolve vers
+# la VM avant certbot. www.* est deja couvert par le wildcard *.root_domain.
+# nginx tourne encore pendant cette attente -> aucune coupure ici.
+- name: Attendre la propagation DNS landing apex (max 14 x 30s)
+  command: dig +short "{{ landing_domain }}" @8.8.8.8
+  register: landing_dns
+  until: landing_dns.stdout.strip() == landing_vm_ip.content.strip()
+  retries: 14
+  delay: 30
+  changed_when: false
+  ignore_errors: yes
+  when:
+    - landing_domain | default('') | length > 0
+    - not landing_cert_exists.stat.exists
+
+- name: Arreter nginx pour certbot landing (liberer le port 80)
+  command: docker stop nginx
+  failed_when: false
+  changed_when: false
+  when:
+    - landing_domain | default('') | length > 0
+    - not landing_cert_exists.stat.exists
+
+- name: Obtenir le certificat SSL landing (apex + www, certbot standalone)
+  command: >
+    certbot certonly
+      --standalone
+      --non-interactive
+      --agree-tos
+      --email "admin@{{ landing_domain }}"
+      -d "{{ landing_domain }}"
+      -d "www.{{ landing_domain }}"
+  when:
+    - landing_domain | default('') | length > 0
+    - not landing_cert_exists.stat.exists
+
+# ── Reseau platform-net ────────────────────────────────────────────────────
+# Supprime platform-net s'il existe sans les bons labels Compose
+# (cree manuellement ou par une ancienne version du role)
+# Docker Compose cree ensuite le reseau avec les labels corrects
+
+- name: Nettoyer platform-net si labels Compose incorrects
+  shell: |
+    LABEL=$(docker network inspect platform-net \
+      --format '{{ "{{" }}index .Labels "com.docker.compose.network"{{ "}}" }}' 2>/dev/null || echo "ABSENT")
+    if [ "$LABEL" != "platform-net" ]; then
+      for cid in $(docker network inspect platform-net \
+        --format '{{ "{{" }}range .Containers{{ "}}" }}{{ "{{" }}.Name{{ "}}" }} {{ "{{" }}end{{ "}}" }}' 2>/dev/null); do
+        docker network disconnect -f platform-net "$cid" 2>/dev/null || true
+      done
+      docker network rm platform-net 2>/dev/null || true
+      echo "platform-net supprime — sera recrée par docker compose"
+    else
+      echo "platform-net OK (labels corrects)"
+    fi
+  changed_when: false
+
+# ── Demarrage nginx ────────────────────────────────────────────────────────
+
+- name: Demarrer nginx (platform-net + volumes SSL)
+  command: docker compose -f /opt/nginx/docker/docker-compose.yml up -d
+  args:
+    chdir: /opt/nginx
+  register: nginx_up
+
+- name: Afficher la sortie docker compose nginx
+  debug:
+    msg: "{{ nginx_up.stdout_lines + nginx_up.stderr_lines }}"
+
+- name: Reconnect keycloak a platform-net (si deploye)
+  # docker-compose.yml de deploy/apps/ n'a pas de container_name explicite —
+  # le service pf-keycloak-app est resolu via `compose ps -q` (app_dir de
+  # deploy/apps/ansible/, /opt/platform) plutot qu'un nom de conteneur fige ici.
+  command: >
+    docker network connect platform-net
+      $(docker compose -f /opt/platform/docker-compose.yml --env-file /opt/platform/.env ps -q pf-keycloak-app)
+  register: reconnect
+  failed_when: false
+  changed_when: reconnect.rc == 0
+
+- name: Attendre que nginx soit operationnel (max 2 min)
+  command: docker inspect --format="{{ '{{' }}.State.Status{{ '}}' }}" nginx
+  register: nginx_status
+  until: nginx_status.stdout == "running"
+  retries: 24
+  delay: 5
+  changed_when: false
+  ignore_errors: true
+
+- name: Logs nginx (diagnostic si le conteneur ne demarre pas)
+  command: docker logs --tail 50 nginx
+  register: nginx_logs
+  changed_when: false
+  failed_when: false
+
+- name: Afficher les logs nginx
+  debug:
+    msg: "{{ nginx_logs.stdout_lines + nginx_logs.stderr_lines }}"
+
+- name: Echouer si nginx ne tourne pas
+  fail:
+    msg: "nginx est en etat '{{ nginx_status.stdout }}' apres 2 min — voir les logs ci-dessus"
+  when: nginx_status.stdout != "running"
+
+- name: Afficher l'etat des conteneurs
+  command: docker ps
+  register: docker_ps
+  changed_when: false
+
+- name: Etat des conteneurs
+  debug:
+    msg: "{{ docker_ps.stdout_lines }}"
+
+# ── Renouvellement automatique SSL ─────────────────────────────────────────
+
+- name: Configurer le cron de renouvellement SSL
+  cron:
+    name: certbot-renew
+    minute: "0"
+    hour: "3"
+    job: "certbot renew --quiet --post-hook 'docker exec nginx nginx -s reload'"
+    user: root
+    state: present

@@ -1,0 +1,20 @@
+---
+# =============================================================================
+# nginx/ansible/site.yml
+#
+# Deploie nginx reverse proxy + obtient le certificat SSL si necessaire.
+# Lance depuis la pipeline via SSM send-command.
+#
+# Usage :
+#   ansible-playbook site.yml -i inventory.ini \
+#     -e @/tmp/nginx-vars.json
+# =============================================================================
+
+- name: Deploy nginx reverse proxy
+  hosts: localhost
+  connection: local
+  become: yes
+
+  tasks:
+    - name: Deployer nginx (reverse proxy + SSL)
+      ansible.builtin.import_tasks: tasks-nginx.yml
