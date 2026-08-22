@@ -277,6 +277,17 @@
   debug:
     msg: "{{ docker_ps.stdout_lines }}"
 
+# ── Rechargement de la conf ────────────────────────────────────────────────
+# Le conteneur nginx tourne en continu : quand il etait DEJA demarre, la tache
+# de demarrage ci-dessus est un no-op et les workers gardent l'ANCIENNE conf en
+# memoire (vecu : upstream renomme pf-keycloak-app -> keycloak, 502 apres
+# suppression de l'ancien conteneur car jamais recharge). Un reload gracieux
+# systematique est idempotent et sans downtime.
+
+- name: Recharger la conf nginx (gracieux, idempotent)
+  command: docker exec nginx nginx -s reload
+  changed_when: true
+
 # ── Renouvellement automatique SSL ─────────────────────────────────────────
 
 - name: Configurer le cron de renouvellement SSL
