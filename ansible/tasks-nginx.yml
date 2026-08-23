@@ -142,6 +142,37 @@
     - admin_domain | default('') | length > 0
     - not admin_cert_exists.stat.exists
 
+# ── Certificat SSL pour la forge (vhost forge.conf : Forgejo) ────────────────
+# forge.conf reference /etc/letsencrypt/live/{{ forge_domain }}/ ; meme logique
+# que le bloc admin ci-dessus. DNS deja couvert par le wildcard *.root_domain.
+# Bloc additif et inerte si forge_domain n'est pas defini.
+
+- name: Verifier si le certificat forge existe deja
+  stat:
+    path: "/etc/letsencrypt/live/{{ forge_domain }}/fullchain.pem"
+  register: forge_cert_exists
+  when: forge_domain | default('') | length > 0
+
+- name: Arreter nginx pour certbot forge (liberer le port 80)
+  command: docker stop nginx
+  failed_when: false
+  changed_when: false
+  when:
+    - forge_domain | default('') | length > 0
+    - not forge_cert_exists.stat.exists
+
+- name: Obtenir le certificat SSL forge (certbot standalone)
+  command: >
+    certbot certonly
+      --standalone
+      --non-interactive
+      --agree-tos
+      --email "admin@{{ domain_name }}"
+      -d "{{ forge_domain }}"
+  when:
+    - forge_domain | default('') | length > 0
+    - not forge_cert_exists.stat.exists
+
 # ── Certificat SSL pour la landing (vhost profeskills.conf : apex + www) ────
 # profeskills.conf reference /etc/letsencrypt/live/{{ landing_domain }}/ ; cert
 # SAN (apex + www) obtenu AVANT le demarrage de nginx. Bloc additif et inerte

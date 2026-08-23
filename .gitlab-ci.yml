@@ -28,6 +28,7 @@ variables:
   DOMAIN_NAME:    "auth.profeskills.com"
   ADMIN_DOMAIN:   "admin.profeskills.com"
   LANDING_DOMAIN: "profeskills.com"
+  FORGE_DOMAIN:   "forge.profeskills.com"
 
 # =============================================================================
 # BLOCS REUTILISABLES
@@ -170,9 +171,10 @@ deploy:nginx:
         --arg domain "${DOMAIN_NAME}" \
         --arg admindomain "${ADMIN_DOMAIN}" \
         --arg landingdomain "${LANDING_DOMAIN}" \
+        --arg forgedomain "${FORGE_DOMAIN}" \
         --arg region "${AWS_REGION}" \
         --arg bucket "${BUCKET}" \
-        '{domain_name:$domain,admin_domain:$admindomain,landing_domain:$landingdomain,aws_region:$region,backups_bucket:$bucket}' \
+        '{domain_name:$domain,admin_domain:$admindomain,landing_domain:$landingdomain,forge_domain:$forgedomain,aws_region:$region,backups_bucket:$bucket}' \
         > /tmp/nginx-vars.json
       aws s3 cp /tmp/nginx-vars.json "s3://${BUCKET}/pipeline/nginx-vars.json" --region "${AWS_REGION}"
       rm -f /tmp/nginx-vars.json
