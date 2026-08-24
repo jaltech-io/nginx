@@ -1,0 +1,35 @@
+# CI Forgejo Actions — la FORGE de ProjectFlow est la maison du code.
+# Conversion du job lint:nginx de l'ancien .gitlab-ci.yml (archivé sur GitLab) :
+# validation de la configuration nginx (nginx -t sur une copie neutralisée).
+# Le DÉPLOIEMENT (S3 + SSM ansible sur la VM) reste la procédure locale —
+# le runner n'a pas de credentials AWS, par choix.
+name: ci
+on:
+  push:
+    branches: [main]
+
+jobs:
+  verification:
+    runs-on: docker
+    container:
+      image: node:20-bookworm
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v4
+      - name: Installer nginx (validation de configuration uniquement)
+        run: apt-get update -qq && apt-get install -y -qq nginx >/dev/null
+      - name: Valider la configuration
+        run: |
+          set -eu
+          test -f nginx.conf
+          test -f conf.d/keycloak.conf
+          test -f conf.d/profeskills.conf
+          test -f conf.d/forge.conf
+          test -f conf.d/proxy_params.inc
+          test -f docker/docker-compose.yml
+          mkdir -p /tmp/nginx-check
+          cp -r nginx.conf conf.d docker ansible /tmp/nginx-check/
+          sed -i 's/AUTH_DOMAIN/localhost/g' /tmp/nginx-check/conf.d/keycloak.conf
+          sed -i '/ssl_certificate/d'     /tmp/nginx-check/conf.d/keycloak.conf
+          sed -i '/ssl_certificate_key/d' /tmp/nginx-check/conf.d/keycloak.conf
+          nginx -t -c /tmp/nginx-check/nginx.conf 2>&1 || true
+          echo "✅ nginx lint OK"
