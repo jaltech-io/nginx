@@ -1,7 +1,7 @@
-# CI Forgejo Actions — la FORGE de ProjectFlow est la maison du code.
-# Conversion du job lint:nginx de l'ancien .gitlab-ci.yml (archivé sur GitLab) :
-# validation de la configuration nginx (nginx -t sur une copie neutralisée).
-# Le DÉPLOIEMENT (S3 + SSM ansible sur la VM) reste la procédure locale —
+# CI GitHub Actions — GitHub est la maison du code (bascule 26/09/2026,
+# remplace .forgejo/workflows/ci.yml).
+# Validation de la configuration nginx (nginx -t sur une copie neutralisee).
+# Le DEPLOIEMENT (S3 + SSM ansible sur la VM) reste la procedure locale —
 # le runner n'a pas de credentials AWS, par choix.
 name: ci
 on:
@@ -10,13 +10,11 @@ on:
 
 jobs:
   verification:
-    runs-on: docker
-    container:
-      image: node:20-bookworm
+    runs-on: ubuntu-latest
     steps:
-      - uses: https://code.forgejo.org/actions/checkout@v4
+      - uses: actions/checkout@v4
       - name: Installer nginx (validation de configuration uniquement)
-        run: apt-get update -qq && apt-get install -y -qq nginx >/dev/null
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nginx
       - name: Valider la configuration
         run: |
           set -eu
