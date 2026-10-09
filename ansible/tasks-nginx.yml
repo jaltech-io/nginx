@@ -231,6 +231,37 @@
     - landing_domain | default('') | length > 0
     - not landing_cert_exists.stat.exists
 
+# ── Certificats SSL des domaines produit (2026-10-09) ──────────────────────
+# projectflow.profeskills.com (vitrine, projectflow.conf) et fo.projectflow.profeskills.com
+# (application, fo-projectflow.conf) : un certificat par nom. DNS deja couvert par le
+# wildcard *.profeskills.com. Les anciens domaines (admin_domain, landing_domain) gardent
+# leur certificat : leurs vhosts ne font plus que rediriger vers ces deux noms.
+
+- name: Verifier si les certificats des domaines produit existent deja
+  stat:
+    path: "/etc/letsencrypt/live/{{ item }}/fullchain.pem"
+  loop: "{{ product_domains | default(['projectflow.profeskills.com', 'fo.projectflow.profeskills.com']) }}"
+  register: product_certs
+
+- name: Arreter nginx pour certbot des domaines produit (liberer le port 80)
+  command: docker stop nginx
+  failed_when: false
+  changed_when: false
+  when: product_certs.results | rejectattr('stat.exists') | list | length > 0
+
+- name: Obtenir les certificats SSL des domaines produit (certbot standalone)
+  command: >
+    certbot certonly
+      --standalone
+      --non-interactive
+      --agree-tos
+      --email "admin@{{ domain_name }}"
+      -d "{{ item.item }}"
+  loop: "{{ product_certs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not item.stat.exists
+
 # ── Reseau platform-net ────────────────────────────────────────────────────
 # Supprime platform-net s'il existe sans les bons labels Compose
 # (cree manuellement ou par une ancienne version du role)
