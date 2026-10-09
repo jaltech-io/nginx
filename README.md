@@ -7,7 +7,9 @@ Gère tous les vhosts de la VM EC2 :
 | Fichier | Domaine |
 |---|---|
 | `conf.d/keycloak.conf` | `https://auth.profeskills.com` |
-| `conf.d/admin.conf` | `https://admin.profeskills.com` (admin-front + admin-api) |
+| `conf.d/00-default.conf` | nom inconnu : connexion fermée (port 80 : challenge ACME seulement) |
+| `conf.d/fo-projectflow.conf` | `https://fo.projectflow.profeskills.com` (application : front + BFF) |
+| `conf.d/projectflow.conf` | `https://projectflow.profeskills.com` (vitrine) |
 | `conf.d/profeskills.conf` | `https://profeskills.com` (landing) |
 
 Le réseau Docker `platform-net` est créé ici — rejoint par chaque app (keycloak, admin-api, admin-front, landing, redis).

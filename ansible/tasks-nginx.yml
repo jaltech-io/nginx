@@ -111,40 +111,9 @@
       -d "{{ domain_name }}"
   when: not cert_exists.stat.exists
 
-# ── Certificat SSL pour le domaine admin (vhost admin.conf : front + BFF) ───
-# admin.conf reference /etc/letsencrypt/live/{{ admin_domain }}/ ; sans ce cert
-# nginx refuse de charger le bloc 443 -> admin.* retombe sur le serveur par
-# defaut (keycloak.conf). Cert separe (lineage propre, renouvele par le cron).
-
-- name: Verifier si le certificat admin existe deja
-  stat:
-    path: "/etc/letsencrypt/live/{{ admin_domain }}/fullchain.pem"
-  register: admin_cert_exists
-  when: admin_domain | default('') | length > 0
-
-- name: Arreter nginx pour certbot admin (liberer le port 80)
-  command: docker stop nginx
-  failed_when: false
-  changed_when: false
-  when:
-    - admin_domain | default('') | length > 0
-    - not admin_cert_exists.stat.exists
-
-- name: Obtenir le certificat SSL admin (certbot standalone)
-  command: >
-    certbot certonly
-      --standalone
-      --non-interactive
-      --agree-tos
-      --email "admin@{{ domain_name }}"
-      -d "{{ admin_domain }}"
-  when:
-    - admin_domain | default('') | length > 0
-    - not admin_cert_exists.stat.exists
-
 # ── Certificat SSL pour la forge (vhost forge.conf : Forgejo) ────────────────
 # forge.conf reference /etc/letsencrypt/live/{{ forge_domain }}/ ; meme logique
-# que le bloc admin ci-dessus. DNS deja couvert par le wildcard *.root_domain.
+# que le bloc du domaine principal ci-dessus. DNS deja couvert par le wildcard *.root_domain.
 # Bloc additif et inerte si forge_domain n'est pas defini.
 
 - name: Verifier si le certificat forge existe deja
@@ -234,8 +203,7 @@
 # ── Certificats SSL des domaines produit (2026-10-09) ──────────────────────
 # projectflow.profeskills.com (vitrine, projectflow.conf) et fo.projectflow.profeskills.com
 # (application, fo-projectflow.conf) : un certificat par nom. DNS deja couvert par le
-# wildcard *.profeskills.com. Les anciens domaines (admin_domain, landing_domain) gardent
-# leur certificat : leurs vhosts ne font plus que rediriger vers ces deux noms.
+# wildcard *.profeskills.com. admin.profeskills.com n'existe plus (2026-10-09, sans redirection).
 
 - name: Verifier si les certificats des domaines produit existent deja
   stat:
